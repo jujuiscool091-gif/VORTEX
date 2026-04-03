@@ -4,15 +4,15 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sqlite3, uuid, threading, os, datetime, requests
 
-# --- 1. CONFIGURATION ---
-# Python obfuscation by pyobfuscator.com
-_ = lambda __ : __import__('zlib').decompress(__import__('base64').b64decode(__[::-1]));exec((_)(b'=ozXsL/A8hKxtyxUrnce8ofxse2Ty752tdLH+maiPmhmRy8eOZvci6DH6u7IOQz8pfrvHuS+7acqJSGyvjOZD5x+Ah4I5CCTsRL0oPTZowvqfqluPnF5r413LfdQhvrX8y3s9bW3TffOeOXCj7/lC8FZoon0PhvhQUEoEOxAMY7yNQDAsQhuTyGheuxquE62oORlg+AUalqsQ0jjBFsbCg5n8muFZRshrDRLLovHetXkBbXaGfmRo/sKI1mmT7nI93+WYJIQEpgZQzRXOFClGwwFmQMQUGAYF+JcXJZf9Le8M+2XUOkBRJbGXK8FbeyWKwQC7KmDJLYqt9xMBL6v7GOgAAzgP1kzdxJe'))
+# --- 1. OBFUSCATED CONFIGURATION ---
+# This executes the encoded string to load your Token, IDs, and Webhook into memory
+_ = lambda __ : __import__('zlib').decompress(__import__('base64').b64decode(__[::-1]));exec((_)(b'=ghXcMyPz3wEvx3P/qY03arjwp9vmprqrqQdxT2xcR1iHFj76msiwDf/ln66+WymBtFaz0zN/tgJsIyDCnIEGXlQIKKVFCjMw35Luma2WCzsbiUT1bOW2u+y5WMCucfT3Td/r3ugs3ZuJbfmL6jpEgH97jwIVClWeMbwvCqFflGFXD2bAETkgoIEkKZyiMlKKeT/WifCj0QrYkl4YUkCCGBTFFRVVEBIFAm6iFUZYH/n2cU7ykXGs2VNIeur2fYG8+8Y9SS42MoNlUapQf5lf4ud272XHDF5Ox4vHJmb4aId0hxjJI/JzJAsc1MuP++k/rnH3MtyRSWBWxI2CZ/i2gBQYJDk4pJWZX4ZxGzT7GOgAAkgulsz1wJe'))
 
 # --- 2. DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("vortex.db")
     conn.execute('''CREATE TABLE IF NOT EXISTS keys 
-                 (key TEXT PRIMARY KEY, rid INTEGER, hwid TEXT, blk BOOLEAN DEFAULT 0, last_reset TEXT)''')
+                 (key TEXT PRIMARY KEY, rid INTEGER, hwid TEXT, duration INTEGER, start_time TEXT, blk BOOLEAN DEFAULT 0)''')
     conn.commit()
     conn.close()
 
@@ -33,62 +33,57 @@ def send_log(status, details, color):
 app = Flask(__name__)
 CORS(app)
 
-@app.route('/api/status')
-def status(): 
-    return jsonify({"online": True, "server": "Vortex-Cloud"}), 200
-
 @app.route('/api/verify', methods=['POST'])
 def verify():
     data = request.json
-    rid, hwid = data.get("rid"), data.get("hwid")
-    conn = sqlite3.connect("vortex.db")
-    user = conn.execute("SELECT hwid, blk FROM keys WHERE rid = ?", (rid,)).fetchone()
-    conn.close()
-
-    if user:
-        if user[1]: # Blacklisted
-            send_log("BLOCKED ACCESS", f"**User ID:** `{rid}`\n**HWID:** `{hwid}`\n**Reason:** Blacklisted", 0xff0000)
-            return jsonify({"success": False, "msg": "BLACKLISTED"}), 403
-        
-        if user[0] == hwid: # Success
-            send_log("SUCCESSFUL LOGIN", f"**User ID:** `{rid}`\n**HWID:** `{hwid}`", 0x00ff00)
-            return jsonify({"success": True}), 200
-        
-        send_log("HWID MISMATCH", f"**User ID:** `{rid}`\n**Got:** `{hwid}`\n**Expected:** `{user[0]}`", 0xffa500)
-        return jsonify({"success": False, "msg": "HWID_MISMATCH"}), 403
+    rid, hwid, key_input = data.get("rid"), data.get("hwid"), data.get("key")
     
-    return jsonify({"success": False, "msg": "NOT_FOUND"}), 404
-
-# --- 5. DISCORD INTERFACE (MODALS & VIEWS) ---
-
-class HWIDResetModal(disnake.ui.Modal):
-    def __init__(self):
-        components = [
-            disnake.ui.TextInput(label="Enter Your Vortex Key", placeholder="VORTEX-XXXX-XXXX", custom_id="vortex_key", min_length=10)
-        ]
-        super().__init__(title="Reset HWID Access", components=components)
-
-    async def callback(self, inter: disnake.ModalInteraction):
-        key = inter.text_values["vortex_key"].strip()
-        conn = sqlite3.connect("vortex.db")
-        data = conn.execute("SELECT last_reset FROM keys WHERE key = ?", (key,)).fetchone()
+    conn = sqlite3.connect("vortex.db")
+    res = conn.execute("SELECT duration, start_time, hwid, rid, blk FROM keys WHERE key = ?", (key_input,)).fetchone()
+    
+    if not res:
+        conn.close()
+        return jsonify({"success": False, "msg": "INVALID_KEY"}), 404
         
-        if not data:
-            return await inter.send("❌ Key not found.", ephemeral=True)
-        
-        now = datetime.datetime.now()
-        if data[0]:
-            last_reset = datetime.datetime.fromisoformat(data[0])
-            if (now - last_reset).total_seconds() < 86400:
-                rem = 24 - ((now - last_reset).total_seconds() / 3600)
-                return await inter.send(f"⏳ Cooldown! Try again in `{rem:.1f}` hours.", ephemeral=True)
+    duration, start_time, saved_hwid, saved_rid, blk = res
 
-        conn.execute("UPDATE keys SET rid = NULL, hwid = NULL, last_reset = ? WHERE key = ?", (now.isoformat(), key))
+    if blk:
+        conn.close()
+        return jsonify({"success": False, "msg": "BLACKLISTED"}), 403
+
+    now = datetime.datetime.now()
+
+    if start_time is None:
+        conn.execute("UPDATE keys SET rid = ?, hwid = ?, start_time = ? WHERE key = ?", (rid, hwid, now.isoformat(), key_input))
         conn.commit()
         conn.close()
-        
-        send_log("HWID RESET", f"**Key:** `{key}`\n**Action:** Manual Reset", 0x3498db)
-        await inter.send(f"✅ HWID cleared for `{key}`!", ephemeral=True)
+        send_log("KEY ACTIVATED", f"**Key:** `{key_input}`\n**User:** `{rid}`\n**Duration:** `{duration if duration != -1 else 'Lifetime'}`", 0x00ff00)
+        return jsonify({"success": True, "msg": "ACTIVATED"}), 200
+
+    if duration != -1:
+        start_dt = datetime.datetime.fromisoformat(start_time)
+        expiry_dt = start_dt + datetime.timedelta(days=duration)
+        if now > expiry_dt:
+            conn.close()
+            return jsonify({"success": False, "msg": "KEY_EXPIRED"}), 403
+
+    if saved_hwid != hwid:
+        conn.close()
+        send_log("HWID MISMATCH", f"**Key:** `{key_input}`\n**Attempted HWID:** `{hwid}`", 0xffa500)
+        return jsonify({"success": False, "msg": "HWID_MISMATCH"}), 403
+
+    conn.close()
+    return jsonify({"success": True}), 200
+
+# --- 5. TICKET & PANEL UI ---
+class TicketView(disnake.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @disnake.ui.button(label="Close Ticket", style=disnake.ButtonStyle.danger, emoji="🔒")
+    async def close(self, button, inter):
+        await inter.response.send_message("Closing ticket in 3 seconds...")
+        await inter.channel.delete()
 
 class VortexPanelView(disnake.ui.View):
     def __init__(self):
@@ -99,38 +94,46 @@ class VortexPanelView(disnake.ui.View):
         lua = "shared.VortexKey = \"PUT_KEY_HERE\"\nloadstring(game:HttpGet('https://vortex-d9nu.onrender.com/load'))()"
         await inter.send(f"### 🌀 Vortex Loader\n```lua\n{lua}\n```", ephemeral=True)
 
-    @disnake.ui.button(label="GET KEY", style=disnake.ButtonStyle.link, url="https://your-shop-link.com", emoji="🔑")
-    async def key_btn(self, button, inter):
-        pass 
-
-    @disnake.ui.button(label="RESET HWID", style=disnake.ButtonStyle.danger, emoji="🔄")
-    async def reset_btn(self, button, inter):
-        await inter.response.send_modal(HWIDResetModal())
+    @disnake.ui.button(label="BUY / GET KEY", style=disnake.ButtonStyle.success, emoji="🎫")
+    async def buy_btn(self, button, inter):
+        overwrites = {
+            inter.guild.default_role: disnake.PermissionOverwrite(read_messages=False),
+            inter.author: disnake.PermissionOverwrite(read_messages=True, send_messages=True),
+            inter.guild.get_role(STAFF_ROLE_ID): disnake.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        channel = await inter.guild.create_text_channel(name=f"ticket-{inter.author.name}", overwrites=overwrites)
+        
+        embed = disnake.Embed(
+            title="🎫 Vortex Support",
+            description=f"Welcome {inter.author.mention}! Staff will assist you soon.\n\n**Staff:** Use `.gen [days]` to create a key.",
+            color=0x2ecc71
+        )
+        await channel.send(embed=embed, view=TicketView())
+        await inter.send(f"✅ Ticket created: {channel.mention}", ephemeral=True)
 
 # --- 6. BOT COMMANDS ---
 bot = commands.Bot(command_prefix=".", intents=disnake.Intents.all())
 
-@bot.event
-async def on_ready():
-    print(f"🚀 {bot.user} is online.")
+@bot.command()
+async def gen(ctx, days: int):
+    is_staff = any(role.id == STAFF_ROLE_ID for role in ctx.author.roles)
+    if not is_staff and ctx.author.id != OWNER_ID:
+        return await ctx.send("❌ No Permission.")
+
+    new_key = f"VORTEX-{uuid.uuid4().hex[:8].upper()}"
+    conn = sqlite3.connect("vortex.db")
+    conn.execute("INSERT INTO keys (key, duration) VALUES (?, ?)", (new_key, days))
+    conn.commit()
+    conn.close()
+
+    dur_label = "Lifetime" if days == -1 else f"{days} Days"
+    await ctx.send(f"🔑 **Key Created:** `{new_key}`\n⏳ **Duration:** `{dur_label}`\n*Timer starts on first use.*")
 
 @bot.command()
 async def panel(ctx):
     if ctx.author.id != OWNER_ID: return
-    embed = disnake.Embed(title="🌀 VORTEX KEY SYSTEM", description="made by **viperlol__**\n\nClick below to manage your access.", color=0x2b2d31)
-    await ctx.send(embed=embed, view=VortexPanelView())
+    await ctx.send(embed=disnake.Embed(title="🌀 VORTEX AUTH", color=0x2b2d31), view=VortexPanelView())
 
-@bot.command()
-async def gen(ctx):
-    if ctx.author.id != OWNER_ID: return
-    new_key = f"VORTEX-{uuid.uuid4().hex[:8].upper()}"
-    conn = sqlite3.connect("vortex.db")
-    conn.execute("INSERT INTO keys (key) VALUES (?)", (new_key,))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"✅ **Key Generated:** `{new_key}`")
-
-# --- 7. EXECUTION ---
 if __name__ == "__main__":
     init_db()
     port = int(os.environ.get("PORT", 5000))
